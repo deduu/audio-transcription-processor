@@ -204,6 +204,6 @@ os.makedirs(transcription_output_dir, exist_ok=True)
 
 ## License
 
-This project is licensed under the MIT License. See the LICENSE file for details.
+This project is licensed under the Apache License Version 2.0 License. See the LICENSE file for details.
 
 **Disclaimer:** This script is intended for educational and personal use. Respect YouTube's Terms of Service and copyright laws when downloading and using content.
