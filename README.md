@@ -28,8 +28,8 @@ This script allows you to:
 1. Clone the repository or download the script:
 
 ```bash
-git clone https://github.com/yourusername/yt-audio-extractor-whisper.git
-cd yt-audio-extractor-whisper
+git clone https://github.com/deduu/audio-transcription-processor
+cd audio-transcription-processor
 ```
 
 2. Install required Python packages:
