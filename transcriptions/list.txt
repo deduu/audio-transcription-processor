@@ -1,2 +1,2 @@
-..\extracted_audio\1.wav|Hai, kerjaan di sebelum hari ini. Selamat datang di main bukelest, teman-teman aku sharei 3 kisi-kisi menarik dari buku yang aku baca. Hari ini kita akan...
-..\extracted_audio\2.wav|Bukul, buku, setel art Kami tidak berguna. Mark Manson Mark Manson adalah seorang penulis New York Times best seller Asal Amerika di genre
+..\extracted_audio\1.wav|terima kasih banyak yang berkata di sini. Terima kasih banyak banyak yang berkata di sini.
+..\extracted_audio\2.wav|adalah seorang penulis New York Times best seller asal Amerika di genre

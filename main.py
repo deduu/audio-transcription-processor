@@ -3,55 +3,61 @@ import subprocess
 from typing import List, Dict, Any
 import whisper  # Import Whisper for transcription
 
-def download_youtube_audio(url: str, output_path: str, start_time: str = "00:00:00", end_time: str = None, file_id: int = None) -> str:
+def download_and_trim_audio(
+    url: str, output_path: str, start_time: str = "00:00:00", end_time: str = None, file_id: int = None
+) -> str:
     if not os.path.exists(output_path):
         os.makedirs(output_path)
-    
-    # Use file_id to name the output file uniquely
-    output_file = os.path.join(output_path, f"{file_id}.%(ext)s" if file_id else '%(title)s.%(ext)s')
-    
-    # Build the yt-dlp command
+
+    # Use file_id to name the initial downloaded file and the trimmed file
+    raw_audio_file = os.path.join(output_path, f"{file_id}_raw.wav" if file_id else "raw_audio.wav")
+    trimmed_audio_file = os.path.join(output_path, f"{file_id}.wav" if file_id else "trimmed_audio.wav")
+
+    # Download the full audio
     command = [
         "yt-dlp",
         "-f", "bestaudio",
         "--extract-audio",
         "--audio-format", "wav",
-        "-o", output_file
+        "-o", raw_audio_file,
+        url,
     ]
     
-    # If start_time and end_time are provided, use --download-sections
-    if start_time and end_time:
-        # Using --download-sections "*start-end"
-        command.extend(["--download-sections", f"*{start_time}-{end_time}"])
-    elif start_time:
-        # Only start_time is provided
-        command.extend(["--postprocessor-args", f"-ss {start_time}"])
-    elif end_time:
-        # Only end_time is provided
-        command.extend(["--postprocessor-args", f"-to {end_time}"])
+    print(f"Downloading audio from {url}")
+    try:
+        subprocess.run(command, check=True, text=True)
+    except subprocess.CalledProcessError as e:
+        print(f"Error downloading audio: {e}")
+        raise
+
+    # Trim the audio using ffmpeg
+    ffmpeg_command = [
+        "ffmpeg",
+        "-i", raw_audio_file,
+        "-ss", start_time,
+        "-to", end_time,
+        "-c", "copy",
+        trimmed_audio_file,
+    ]
     
-    # Add the URL
-    command.append(url)
-    
-    # Running the yt-dlp command to download the audio
-    print(f"Downloading audio from {url} between {start_time} and {end_time}")
-    subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    
-    # Expected output file
-    expected_filename = f"{file_id}.wav" if file_id else None
-    if expected_filename and os.path.exists(os.path.join(output_path, expected_filename)):
-        audio_file = os.path.join(output_path, expected_filename)
-        print(f"Downloaded audio: {audio_file}")
-        return audio_file
+    print(f"Trimming audio from {start_time} to {end_time}")
+    try:
+        subprocess.run(ffmpeg_command, check=True, text=True)
+    except subprocess.CalledProcessError as e:
+        print(f"Error trimming audio: {e}")
+        raise
+
+    # Remove the raw audio file to save space
+    if os.path.exists(raw_audio_file):
+        os.remove(raw_audio_file)
+
+    if os.path.exists(trimmed_audio_file):
+        print(f"Trimmed audio saved to: {trimmed_audio_file}")
+        return trimmed_audio_file
     else:
-        # If file_id is not specified, try to find any .wav file in the output directory
-        downloaded_files = [f for f in os.listdir(output_path) if f.endswith(".wav")]
-        if downloaded_files:
-            audio_file = os.path.join(output_path, downloaded_files[0])
-            print(f"Downloaded audio: {audio_file}")
-            return audio_file
-        else:
-            raise FileNotFoundError("Audio file not found in the specified directory.")
+        raise FileNotFoundError("Trimmed audio file not created.")
+
+
 
 def transcribe_audio_files(audio_files: List[str], output_dir: str) -> List[str]:
     file_and_transcripts = []
@@ -90,8 +96,8 @@ def main():
          {
             'url': 'https://www.youtube.com/watch?v=dAI12OGD04A',
             'time_ranges': [
-                {'start_time': '00:00:00', 'end_time': '00:00:10', 'id': 1},
-                {'start_time': '00:00:15', 'end_time': '00:00:20', 'id': 2},
+                {'start_time': '00:00:04', 'end_time': '00:00:16', 'id': 1},
+                {'start_time': '00:00:16', 'end_time': '00:00:20', 'id': 2},
                 # Add more time ranges as needed
             ]
         }
@@ -117,11 +123,13 @@ def main():
         time_ranges = info.get('time_ranges', [])
         for time_range in time_ranges:
             start_time = time_range.get('start_time', '00:00:00')
+            print(f"start_time: {start_time}")
             end_time = time_range.get('end_time', None)
+            print(f"end_time: {end_time}")
             file_id = time_range.get('id', None)
             # Download the audio from the YouTube video in the specified time range
             try:
-                audio_file = download_youtube_audio(url, audio_output_dir, start_time, end_time, file_id)
+                audio_file = download_and_trim_audio(url, audio_output_dir, start_time, end_time, file_id)
                 audio_files.append(audio_file)
             except Exception as e:
                 print(f"Error downloading audio from {url}: {e}")
