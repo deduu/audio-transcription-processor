@@ -30,6 +30,40 @@ from pathlib import Path
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Import the pyannote.audio pipeline for diarization
+from pyannote.audio import Pipeline
+
+def seconds_to_hms(seconds: float) -> str:
+    """Convert seconds (float) to HH:MM:SS.sss format."""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = seconds - (hours * 3600 + minutes * 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:06.3f}"
+
+class SpeakerDiarizer:
+    def __init__(self):
+        # This loads a pre-trained diarization pipeline.
+        # Note: You may need to set the HUGGINGFACE_TOKEN environment variable if required.
+        self.pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1",
+    use_auth_token="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")
+    
+    def diarize(self, audio_file: Path):
+        """
+        Runs speaker diarization on the given audio file.
+        Returns a list of segments, each with start time, end time, and speaker label.
+        """
+        diarization = self.pipeline(str(audio_file))
+        segments = []
+        # The pipeline returns segments as (start, end) with a speaker label.
+        for turn, _, speaker in diarization.itertracks(yield_label=True):
+            segments.append({
+                "start": turn.start,
+                "end": turn.end,
+                "speaker": speaker
+            })
+        return segments
+
+
 class AudioProcessor:
     def __init__(self, output_path: str, audio_format: str = "wav"):
         self.output_path = Path(output_path)
@@ -147,6 +181,7 @@ def process_videos(config: AppConfig, videos: List[VideoConfig]) -> None:
     audio_processor = AudioProcessor(config.audio_output_dir, config.audio_format)
     transcriber = Transcriber(config.whisper_model)
     writer = TranscriptionWriter(Path(config.transcription_output_dir))
+    diarizer = SpeakerDiarizer()  # Initialize diarization pipeline
     
     transcriptions = []
     
@@ -160,19 +195,45 @@ def process_videos(config: AppConfig, videos: List[VideoConfig]) -> None:
                     time_range.end_time,
                     time_range.id
                 )
+
+                logger.info(f"Running diarization on {audio_file}")
+                # Run speaker diarization on the trimmed audio file.
+                diarization_segments = diarizer.diarize(audio_file)
+
+                speaker_transcriptions = []
+                # For each diarized segment, extract that audio and transcribe it.
+                for i, segment in enumerate(diarization_segments):
+                    seg_start = seconds_to_hms(segment["start"])
+                    seg_end = seconds_to_hms(segment["end"])
+                    # Use a compound id (e.g. "1_0", "1_1", …) for the segment file name.
+                    segment_file = audio_processor.trim_audio(
+                        audio_file,
+                        seg_start,
+                        seg_end,
+                        file_id=f"{time_range.id}_{i}"
+                    )
+                    transcript_segment = transcriber.transcribe_file(segment_file)
+                    # Optionally, remove the segment file after transcription.
+                    segment_file.unlink(missing_ok=True)
+                    speaker_transcriptions.append(f"{segment['speaker']}: {transcript_segment}")
+                
+                # Combine the diarized segment transcripts into one full transcript.
+                combined_transcript = "\n".join(speaker_transcriptions)
                 
                 # Transcribe audio
-                transcript = transcriber.transcribe_file(audio_file)
+                # transcript = transcriber.transcribe_file(audio_file)
                 
                 # Store result
                 transcriptions.append({
                     "file": os.path.relpath(audio_file, start=config.transcription_output_dir),
-                    "transcript": transcript
+                    "transcript": combined_transcript
                 })
                 # transcriptions.append({
                 #     "file": audio_file.relative_to(config.transcription_output_dir),
                 #     "transcript": transcript
                 # })
+                  # Optionally, remove the original trimmed audio file if not needed.
+                audio_file.unlink(missing_ok=True)
                 
             except Exception as e:
                 logger.error(f"Error processing video {video.url} at {time_range}: {e}")
@@ -189,7 +250,7 @@ def main():
         VideoConfig(
             url="https://www.youtube.com/watch?v=7ARBJQn6QkM",
             time_ranges=[
-                TimeRange(start_time="00:00:00", end_time="00:00:05", id=3),
+                TimeRange(start_time="00:00:00", end_time="00:10:00", id=1),
   
             ]
         ),
