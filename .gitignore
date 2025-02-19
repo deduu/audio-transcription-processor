@@ -129,6 +129,8 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+extracted_audio/
+transcriptions/
 
 # Spyder project settings
 .spyderproject

@@ -93,19 +93,19 @@ def create_transcription_file(file_and_transcripts: List[str], output_file: str)
 def main():
     # User specifies the list of URLs and corresponding time ranges
     url_info_list: List[Dict[str, Any]] = [
-         {
-            'url': 'https://www.youtube.com/watch?v=dAI12OGD04A',
+        {
+            'url': "https://www.youtube.com/watch?v=7ARBJQn6QkM",
             'time_ranges': [
-                {'start_time': '00:00:04', 'end_time': '00:00:16', 'id': 1},
-                {'start_time': '00:00:16', 'end_time': '00:00:20', 'id': 2},
+                {'start_time': '00:00:10', 'end_time': '00:00:20', 'id': 1},
+                {'start_time': '00:01:00', 'end_time': '00:01:10', 'id': 2},
                 # Add more time ranges as needed
             ]
-        }
+        },
         # {
-        #     'url': 'https://www.youtube.com/watch?v=pC1QH-0BhmE',
+        #     'url': 'https://www.youtube.com/watch?v=VIDEO_ID_2',
         #     'time_ranges': [
-        #         {'start_time': '00:00:44', 'end_time': '00:00:54', 'id': 3},
-        #         {'start_time': '00:01:00', 'end_time': '00:01:10', 'id': 4},
+        #         {'start_time': '00:02:00', 'end_time': '00:02:10', 'id': 3},
+        #         {'start_time': '00:03:00', 'end_time': '00:03:10', 'id': 4},
         #         # Add more time ranges as needed
         #     ]
         # },

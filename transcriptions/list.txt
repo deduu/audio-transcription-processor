@@ -1,2 +1,1 @@
-..\extracted_audio\1.wav|terima kasih banyak yang berkata di sini. Terima kasih banyak banyak yang berkata di sini.
-..\extracted_audio\2.wav|adalah seorang penulis New York Times best seller asal Amerika di genre
+..\extracted_audio\3.wav|At some point you have to believe something, we've reinvented computing this, we know it. What is the vision for what you see?
