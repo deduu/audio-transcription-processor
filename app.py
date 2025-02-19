@@ -45,7 +45,7 @@ class SpeakerDiarizer:
         # This loads a pre-trained diarization pipeline.
         # Note: You may need to set the HUGGINGFACE_TOKEN environment variable if required.
         self.pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1",
-    use_auth_token="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")
+    use_auth_token= os.environ.get("HUGGINGFACE_TOKEN"))
     
     def diarize(self, audio_file: Path):
         """
