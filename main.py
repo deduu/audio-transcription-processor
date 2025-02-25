@@ -1,145 +1,272 @@
+# streamlit_app.py
+import sys
+import asyncio
+
+if sys.platform.startswith('win'):
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+import streamlit as st
 import os
-import subprocess
-from typing import List, Dict, Any
-import whisper  # Import Whisper for transcription
+import time
+import re
+import tempfile
 
-def download_and_trim_audio(
-    url: str, output_path: str, start_time: str = "00:00:00", end_time: str = None, file_id: int = None
-) -> str:
-    if not os.path.exists(output_path):
-        os.makedirs(output_path)
+# Local imports from our modules:
+from app.config import TimeRange
+from app.audio_processor import (
+    create_temp_file,
+    trim_audio,
+    download_youtube_audio
+)
+from app.diarizer import run_diarization
+from app.transcriber import WhisperTranscriber
 
-    # Use file_id to name the initial downloaded file and the trimmed file
-    raw_audio_file = os.path.join(output_path, f"{file_id}_raw.wav" if file_id else "raw_audio.wav")
-    trimmed_audio_file = os.path.join(output_path, f"{file_id}.wav" if file_id else "trimmed_audio.wav")
+# ----- Utility functions ------
 
-    # Download the full audio
-    command = [
-        "yt-dlp",
-        "-f", "bestaudio",
-        "--extract-audio",
-        "--audio-format", "wav",
-        "-o", raw_audio_file,
-        url,
-    ]
-    
-    print(f"Downloading audio from {url}")
-    try:
-        subprocess.run(command, check=True, text=True)
-    except subprocess.CalledProcessError as e:
-        print(f"Error downloading audio: {e}")
-        raise
+def seconds_to_hms(seconds: float) -> str:
+    """Convert seconds (float) to HH:MM:SS.sss format."""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = seconds - (hours * 3600 + minutes * 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:06.3f}"
 
-    # Trim the audio using ffmpeg
-    ffmpeg_command = [
-        "ffmpeg",
-        "-i", raw_audio_file,
-        "-ss", start_time,
-        "-to", end_time,
-        "-c", "copy",
-        trimmed_audio_file,
-    ]
-    
-    print(f"Trimming audio from {start_time} to {end_time}")
-    try:
-        subprocess.run(ffmpeg_command, check=True, text=True)
-    except subprocess.CalledProcessError as e:
-        print(f"Error trimming audio: {e}")
-        raise
-
-    # Remove the raw audio file to save space
-    if os.path.exists(raw_audio_file):
-        os.remove(raw_audio_file)
-
-    if os.path.exists(trimmed_audio_file):
-        print(f"Trimmed audio saved to: {trimmed_audio_file}")
-        return trimmed_audio_file
+def hms_to_seconds(hms: str) -> float:
+    """Convert HH:MM:SS or HH:MM:SS.sss to seconds."""
+    if '.' in hms:
+        time_part, ms_part = hms.split('.')
+        ms = float(f"0.{ms_part}")
     else:
-        raise FileNotFoundError("Trimmed audio file not created.")
+        time_part = hms
+        ms = 0.0
+    parts = time_part.split(':')
+    if len(parts) == 3:
+        h, m, s = parts
+        seconds = int(h) * 3600 + int(m) * 60 + int(s) + ms
+    elif len(parts) == 2:
+        m, s = parts
+        seconds = int(m) * 60 + int(s) + ms
+    else:
+        seconds = int(parts[0]) + ms
+    return seconds
 
+def validate_time_format(time_str: str) -> bool:
+    """Validate time format (HH:MM:SS or MM:SS or seconds)."""
+    pattern = r'^([0-9]{1,2}:)?[0-5]?[0-9]:[0-5][0-9](\.[0-9]{1,3})?$'
+    return re.match(pattern, time_str) is not None
 
+# ----- Main Streamlit layout & logic ------
 
-def transcribe_audio_files(audio_files: List[str], output_dir: str) -> List[str]:
-    file_and_transcripts = []
-    
-    # Load the Whisper model
-    model = whisper.load_model("base")  # You can choose 'tiny', 'base', 'small', 'medium', 'large'
-    
-    for audio_file in audio_files:
-        if os.path.exists(audio_file):
-            try:
-                # Transcribe the audio file using Whisper
-                print(f"Transcribing {audio_file}...")
-                result = model.transcribe(audio_file)
-                transcript = result["text"].strip()
-                print(f"Transcribed {audio_file}: {transcript}")
-            except Exception as e:
-                print(f"Error transcribing {audio_file}: {e}")
-                continue
+# Page config + custom CSS
+st.set_page_config(page_title="Audio Transcription & Diarization", layout="wide")
+st.markdown(
+    """
+    <style>
+        .main {
+            padding: 2rem;
+            max-width: 1200px;
+        }
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 8px;
+        }
+        .stTabs [data-baseweb="tab"] {
+            height: 50px;
+            white-space: pre-wrap;
+            background-color: #f0f2f6;
+            border-radius: 5px 5px 0 0;
+            padding: 8px 16px;
+            font-weight: 600;
+        }
+        .stTabs [aria-selected="true"] {
+            background-color: #4CAF50 !important;
+            color: white !important;
+        }
+        .output-container {
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 16px;
+            background-color: #f9f9f9;
+            margin-top: 20px;
+        }
+        .speaker-label {
+            font-weight: bold;
+            padding: 2px 8px;
+            border-radius: 4px;
+            margin-right: 8px;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
-            # Build the output line
-            relative_audio_path = os.path.relpath(audio_file, output_dir)
-            file_and_transcripts.append(f"{relative_audio_path}|{transcript}")
-        else:
-            print(f"File not found: {audio_file}")
-    return file_and_transcripts
+def display_header():
+    """Display the application header with an icon and description."""
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        st.image("https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/1f399.png", width=80)
+    with col2:
+        st.title("Audio Transcription & Speaker Diarization")
+        st.markdown("Process audio files or YouTube videos to get transcriptions with speaker identification.")
 
-def create_transcription_file(file_and_transcripts: List[str], output_file: str):
-    with open(output_file, "w") as f:
-        for line in file_and_transcripts:
-            f.write(f"{line}\n")
-    print(f"File '{output_file}' created successfully.")
+def get_whisper_models():
+    """Return available Whisper models for the dropdown."""
+    return ["tiny", "base", "small", "medium", "large"]
+
+def display_transcription(transcriptions):
+    """Display final transcription results in a styled container."""
+    if not transcriptions:
+        st.warning("No transcription results available.")
+        return
+    st.subheader("Transcription Results")
+    with st.container():
+        st.markdown('<div class="output-container">', unsafe_allow_html=True)
+        # Collect all unique speakers
+        speakers = list(set(t["speaker"] for t in transcriptions))
+        # Assign colors to each speaker label
+        colors = ["#FF9AA2", "#FFB7B2", "#FFDAC1", "#E2F0CB", "#B5EAD7", "#C7CEEA"]
+        speaker_colors = {speakers[i]: colors[i % len(colors)] for i in range(len(speakers))}
+        # Loop through segments and print
+        for seg in transcriptions:
+            spk = seg["speaker"]
+            txt = seg["text"]
+            start = seg["start"]
+            end   = seg["end"]
+            timestamp = f"{start:.2f}s - {end:.2f}s"
+            speaker_label = f'<span class="speaker-label" style="background-color: {speaker_colors[spk]};">{spk}</span>'
+            st.markdown(f'{speaker_label} <small>({timestamp})</small> {txt}', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+def process_audio(file_path: str, start_time: str, end_time: str, whisper_model="base"):
+    """
+    Orchestrates the entire processing:
+    1. Trims the audio to the given time range.
+    2. Runs diarization to find speaker segments.
+    3. For each speaker segment, re-trims & transcribes with Whisper.
+    """
+    temp_dir = tempfile.mkdtemp()
+    trimmed_path = os.path.join(temp_dir, "trimmed_audio.wav")
+
+    # Trim the main file to user’s requested time range
+    trimmed_file = trim_audio(file_path, start_time, end_time, trimmed_path)
+    if not trimmed_file:
+        return []
+
+    # Diarize
+    diarization_segments = run_diarization(trimmed_file)
+
+    # Transcribe
+    transcriber = WhisperTranscriber(model_name=whisper_model)
+    transcriptions = []
+    for i, segment in enumerate(diarization_segments):
+        seg_start = seconds_to_hms(segment["start"])
+        seg_end   = seconds_to_hms(segment["end"])
+        # Create a new trimmed segment
+        segment_path = os.path.join(temp_dir, f"segment_{i}.wav")
+        segment_file = trim_audio(trimmed_file, seg_start, seg_end, segment_path)
+        if segment_file:
+            text = transcriber.transcribe(segment_file)
+            transcriptions.append({
+                "speaker": segment["speaker"],
+                "text": text,
+                "start": segment["start"],
+                "end": segment["end"]
+            })
+            os.remove(segment_file)
+    os.remove(trimmed_file)
+    return transcriptions
 
 def main():
-    # User specifies the list of URLs and corresponding time ranges
-    url_info_list: List[Dict[str, Any]] = [
-        {
-            'url': "https://www.youtube.com/watch?v=7ARBJQn6QkM",
-            'time_ranges': [
-                {'start_time': '00:00:10', 'end_time': '00:00:20', 'id': 1},
-                {'start_time': '00:01:00', 'end_time': '00:01:10', 'id': 2},
-                # Add more time ranges as needed
-            ]
-        },
-        # {
-        #     'url': 'https://www.youtube.com/watch?v=VIDEO_ID_2',
-        #     'time_ranges': [
-        #         {'start_time': '00:02:00', 'end_time': '00:02:10', 'id': 3},
-        #         {'start_time': '00:03:00', 'end_time': '00:03:10', 'id': 4},
-        #         # Add more time ranges as needed
-        #     ]
-        # },
-        # Add more URLs and time ranges as needed
-    ]
+    display_header()
+    
+    # Sidebar config
+    st.sidebar.header("Configuration")
+    whisper_model = st.sidebar.selectbox("Whisper Model", get_whisper_models(), index=1)
 
-    audio_output_dir = "extracted_audio"
-    transcription_output_dir = "transcriptions"
-    os.makedirs(audio_output_dir, exist_ok=True)
-    os.makedirs(transcription_output_dir, exist_ok=True)
+    # Tabs for either file upload or YouTube
+    tab1, tab2 = st.tabs(["📁 Upload Audio", "🎥 YouTube URL"])
+    
+    with tab1:
+        st.header("Upload Audio File")
+        uploaded_file = st.file_uploader("Choose an audio file", type=["wav", "mp3", "m4a"])
+        if uploaded_file:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.audio(uploaded_file)
+            with col2:
+                st.subheader("Time Range")
+                start_time = st.text_input("Start Time (HH:MM:SS)", "00:00:00")
+                end_time_enabled = st.checkbox("Set End Time", value=True)
+                end_time = st.text_input("End Time (HH:MM:SS)", "00:00:30") if end_time_enabled else None
 
-    audio_files = []
-    for info in url_info_list:
-        url = info['url']
-        time_ranges = info.get('time_ranges', [])
-        for time_range in time_ranges:
-            start_time = time_range.get('start_time', '00:00:00')
-            print(f"start_time: {start_time}")
-            end_time = time_range.get('end_time', None)
-            print(f"end_time: {end_time}")
-            file_id = time_range.get('id', None)
-            # Download the audio from the YouTube video in the specified time range
-            try:
-                audio_file = download_and_trim_audio(url, audio_output_dir, start_time, end_time, file_id)
-                audio_files.append(audio_file)
-            except Exception as e:
-                print(f"Error downloading audio from {url}: {e}")
+            if st.button("Process Audio", key="process_upload"):
+                # Validate times
+                if not validate_time_format(start_time):
+                    st.error("Invalid start time format. Use HH:MM:SS or MM:SS.")
+                    return
+                if end_time and not validate_time_format(end_time):
+                    st.error("Invalid end time format. Use HH:MM:SS or MM:SS.")
+                    return
+                # Process
+                with st.spinner("Processing audio..."):
+                    temp_path = create_temp_file(uploaded_file)
+                    transcriptions = process_audio(temp_path, start_time, end_time, whisper_model)
+                    display_transcription(transcriptions)
+                    if transcriptions:
+                        # Make a text for download
+                        download_text = "\n\n".join([
+                            f"{t['speaker']} ({t['start']:.2f}s - {t['end']:.2f}s): {t['text']}"
+                            for t in transcriptions
+                        ])
+                        st.download_button(
+                            label="Download Transcription",
+                            data=download_text,
+                            file_name=f"transcription_{int(time.time())}.txt",
+                            mime="text/plain"
+                        )
+    
+    with tab2:
+        st.header("YouTube Video")
+        youtube_url = st.text_input("YouTube URL", placeholder="https://www.youtube.com/watch?v=...")
+        if youtube_url:
+            st.subheader("Time Range")
+            col1, col2 = st.columns(2)
+            with col1:
+                start_time = st.text_input("Start Time (HH:MM:SS)", "00:00:00", key="yt_start")
+            with col2:
+                end_time_enabled = st.checkbox("Set End Time", value=True, key="yt_end_enable")
+                end_time = st.text_input("End Time (HH:MM:SS)", "00:05:00", key="yt_end") if end_time_enabled else None
 
-    # Transcribe the audio files
-    file_and_transcripts = transcribe_audio_files(audio_files, transcription_output_dir)
+            if youtube_url.startswith("https://"):
+                st.info("Note: The application will download the audio from this YouTube video.")
+            if st.button("Process Video", key="process_yt"):
+                if not validate_time_format(start_time):
+                    st.error("Invalid start time format. Use HH:MM:SS or MM:SS.")
+                    return
+                if end_time and not validate_time_format(end_time):
+                    st.error("Invalid end time format. Use HH:MM:SS or MM:SS.")
+                    return
+                if not youtube_url.startswith("https://"):
+                    st.error("Please enter a valid YouTube URL.")
+                    return
 
-    # Create the transcription file
-    output_file = os.path.join(transcription_output_dir, "list.txt")
-    create_transcription_file(file_and_transcripts, output_file)
+                with st.spinner("Downloading and processing video..."):
+                    temp_dir = tempfile.mkdtemp()
+                    output_file = os.path.join(temp_dir, "youtube_audio.wav")
+                    audio_file = download_youtube_audio(youtube_url, output_file)
+                    if audio_file:
+                        transcriptions = process_audio(audio_file, start_time, end_time, whisper_model)
+                        display_transcription(transcriptions)
+                        if transcriptions:
+                            download_text = "\n\n".join([
+                                f"{t['speaker']} ({t['start']:.2f}s - {t['end']:.2f}s): {t['text']}"
+                                for t in transcriptions
+                            ])
+                            st.download_button(
+                                label="Download Transcription",
+                                data=download_text,
+                                file_name=f"youtube_transcription_{int(time.time())}.txt",
+                                mime="text/plain"
+                            )
+                    if os.path.exists(output_file):
+                        os.remove(output_file)
 
 if __name__ == "__main__":
     main()
